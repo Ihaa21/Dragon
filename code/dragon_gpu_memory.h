@@ -1,11 +1,4 @@
 #if !defined(DRAGON_GPU_MEMORY_H)
-/* ========================================================================
-   $File: $
-   $Date: $
-   $Revision: $
-   $Creator: Ihor Szlachtycz $
-   $Notice: (C) Copyright 2014 by Dream.Inc, Inc. All Rights Reserved. $
-   ======================================================================== */
 
 struct gpu_ptr
 {
