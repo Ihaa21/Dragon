@@ -17,6 +17,8 @@
 #include "dragon_string.h"
 #include "dragon_memory.h"
 #include "dragon_memory.cpp"
+#include "dragon_gpu_memory.h"
+#include "dragon_gpu_memory.cpp"
 #include "dragon_file_assets.h"
 #include "dragon_assets.h"
 
@@ -25,13 +27,15 @@
 global prog_state GlobalState;
 
 internal VkShaderModule CreateShaderModule(char* FileName);
-internal void CreateBuffer(VkBufferUsageFlags Usage, VkMemoryPropertyFlagBits MemoryProperty,
-                           u32 BufferSize, VkBuffer* BufferHandle, VkDeviceMemory* BufferMem);
-internal void CreateImage(u32 Width, u32 Height, VkFormat Format, i32 Usage,
-                          VkImageAspectFlags AspectMask, VkImageLayout Layout,
-                          VkImage* OutImg, VkImageView* OutView, VkDeviceMemory* OutMemory);
+internal void CreateBuffer(gpu_linear_allocator* Allocator, VkBufferUsageFlags Usage,
+                           VkMemoryPropertyFlagBits MemoryProperty, u32 BufferSize,
+                           VkBuffer* BufferHandle);
+internal void CreateImage(gpu_linear_allocator* Allocator, u32 Width, u32 Height, VkFormat Format,
+                          i32 Usage, VkImageAspectFlags AspectMask, VkImageLayout Layout,
+                          VkImage* OutImg, VkImageView* OutView);
 inline void MoveBufferToGpuMemory(VkCommandBuffer CmdBuffer, VkBuffer Buffer, void* Data, u32 BufferSize);
-inline void MoveImageToGpuMemory(VkCommandBuffer CmdBuffer, u32 ImageSize, u32 Width, u32 Height, void* Data, VkImage Image);
+inline void MoveImageToGpuMemory(gpu_linear_allocator* Allocator, VkCommandBuffer CmdBuffer,
+                                 u32 ImageSize, u32 Width, u32 Height, void* Data, VkImage Image);
 
 #include "dragon_assets.cpp"
 #include "dragon_render.cpp"
@@ -304,8 +308,9 @@ internal VkShaderModule CreateShaderModule(char* FileName)
     return ShaderModule;
 }
 
-internal void CreateBuffer(VkBufferUsageFlags Usage, VkMemoryPropertyFlagBits MemoryProperty,
-                           u32 BufferSize, VkBuffer* BufferHandle, VkDeviceMemory* BufferMem)
+internal void CreateBuffer(gpu_linear_allocator* Allocator, VkBufferUsageFlags Usage,
+                           VkMemoryPropertyFlagBits MemoryProperty, u32 BufferSize,
+                           VkBuffer* BufferHandle)
 {
     VkBufferCreateInfo BufferCreateInfo = {};
     BufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -322,31 +327,10 @@ internal void CreateBuffer(VkBufferUsageFlags Usage, VkMemoryPropertyFlagBits Me
         InvalidCodePath;
     }
 
-    // NOTE: Get buffer memory
     VkMemoryRequirements BufferMemRequirements;
     vkGetBufferMemoryRequirements(GlobalState.Device, *BufferHandle, &BufferMemRequirements);
-
-    for (u32 i = 0; i < GlobalState.MemoryProperties.memoryTypeCount; ++i)
-    {
-        if ((BufferMemRequirements.memoryTypeBits & (1 << i)) &&
-            (GlobalState.MemoryProperties.memoryTypes[i].propertyFlags & MemoryProperty))
-        {
-            VkMemoryAllocateInfo MemoryAllocateInfo =
-                {
-                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                    0,
-                    BufferMemRequirements.size,
-                    i,
-                };
-
-            if (vkAllocateMemory(GlobalState.Device, &MemoryAllocateInfo, 0, BufferMem) == VK_SUCCESS)
-            {
-                break;
-            }
-        }
-    }
-
-    if (vkBindBufferMemory(GlobalState.Device, *BufferHandle, *BufferMem, 0) != VK_SUCCESS)
+    gpu_ptr MemPtr = PushSize(Allocator, BufferMemRequirements.size, BufferMemRequirements.alignment);
+    if (vkBindBufferMemory(GlobalState.Device, *BufferHandle, *MemPtr.Memory, MemPtr.Offset) != VK_SUCCESS)
     {
         InvalidCodePath;
     }
@@ -365,6 +349,7 @@ struct load_texture_work
     asset_texture* Texture;
 };
 
+#if 0
 internal void WorkLoadTexture()
 {
     load_texture_work* Work = ;
@@ -548,10 +533,11 @@ internal void WorkLoadTexture()
     vkDestroyBuffer(GlobalState.Device, TempBuffer, 0);
     vkFreeMemory(GlobalState.Device, TempMemory, 0);
 }
+#endif
 
-internal void CreateImage(u32 Width, u32 Height, VkFormat Format, i32 Usage,
-                          VkImageAspectFlags AspectMask, VkImageLayout Layout,
-                          VkImage* OutImg, VkImageView* OutView, VkDeviceMemory* OutMemory)
+internal void CreateImage(gpu_linear_allocator* Allocator, u32 Width, u32 Height, VkFormat Format,
+                          i32 Usage, VkImageAspectFlags AspectMask, VkImageLayout Layout,
+                          VkImage* OutImg, VkImageView* OutView)
 {
     VkImageCreateInfo ImageCreateInfo = {};
     ImageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -577,31 +563,10 @@ internal void CreateImage(u32 Width, u32 Height, VkFormat Format, i32 Usage,
         InvalidCodePath;
     }
 
-    // NOTE: Allocate mem for image
     VkMemoryRequirements ImageMemRequirements;
     vkGetImageMemoryRequirements(GlobalState.Device, *OutImg, &ImageMemRequirements);
-
-    for (u32 MemTypeId = 0; MemTypeId < GlobalState.MemoryProperties.memoryTypeCount; ++MemTypeId)
-    {
-        if ((ImageMemRequirements.memoryTypeBits & (1 << MemTypeId)) &&
-            (GlobalState.MemoryProperties.memoryTypes[MemTypeId].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
-        {
-            VkMemoryAllocateInfo MemoryAllocateInfo =
-                {
-                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                    0,
-                    ImageMemRequirements.size,
-                    MemTypeId,
-                };
-
-            if (vkAllocateMemory(GlobalState.Device, &MemoryAllocateInfo, 0, OutMemory) != VK_SUCCESS)
-            {
-                InvalidCodePath;
-            }
-        }
-    }
-
-    if (vkBindImageMemory(GlobalState.Device, *OutImg, *OutMemory, 0) != VK_SUCCESS)
+    gpu_ptr MemPtr = PushSize(Allocator, ImageMemRequirements.size, ImageMemRequirements.alignment);
+    if (vkBindImageMemory(GlobalState.Device, *OutImg, *MemPtr.Memory, MemPtr.Offset) != VK_SUCCESS)
     {
         InvalidCodePath;
     }
@@ -728,19 +693,19 @@ inline void MoveBufferToGpuMemory(VkCommandBuffer CmdBuffer, VkBuffer Buffer, vo
 #endif
 }
 
-inline void MoveImageToGpuMemory(VkCommandBuffer CmdBuffer, u32 ImageSize, u32 Width, u32 Height,
-                                 void* Data, VkImage Image)
+inline void MoveImageToGpuMemory(gpu_linear_allocator* Allocator, VkCommandBuffer CmdBuffer,
+                                 u32 ImageSize, u32 Width, u32 Height, void* Data, VkImage Image)
 {
     // TODO: Shouldn't this just work?
     if (Width == 0 || Height == 0)
     {
         return;
     }
-    
+
+    // TODO: Fix this temporary buffer allocation stuff
     VkBuffer TempBuffer;
-    VkDeviceMemory TempMemory;
-    CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                 ImageSize, &TempBuffer, &TempMemory);
+    CreateBuffer(Allocator, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                 ImageSize, &TempBuffer);
     MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, TempBuffer, Data, ImageSize);
     
     // NOTE: Copy texels from staging buffer to gpu local mem
@@ -824,7 +789,6 @@ inline void MoveImageToGpuMemory(VkCommandBuffer CmdBuffer, u32 ImageSize, u32 W
     vkDeviceWaitIdle(GlobalState.Device);
 
     vkDestroyBuffer(GlobalState.Device, TempBuffer, 0);
-    vkFreeMemory(GlobalState.Device, TempMemory, 0);
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugReportCallback(VkDebugReportFlagsEXT flags,
@@ -909,6 +873,20 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GlobalState.GameIsRunning = true;
     }
 
+#if 0
+    // TODO: REMOVE
+    {
+        u32 ArenaSize = MegaBytes(2);
+        list_allocator Allocator = InitListAllocator(PushSize(&GlobalState.Arena, ArenaSize), ArenaSize);
+
+        void* Mem1 = PushSize(&Allocator, 15);
+        void* Mem2 = PushSize(&Allocator, 30);
+        FreeAlloc(&Allocator, Mem2);
+
+        int i = 0;
+    }
+#endif
+    
     //
     // NOTE: Init the work queue
     //
@@ -1565,6 +1543,28 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         }
     }
 
+    // NOTE: Init Gpu Memory Allocator
+    {
+        u64 ProgGpuAllocSize = MegaBytes(512);
+        
+        VkMemoryAllocateInfo MemoryAllocateInfo = {};
+        MemoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        MemoryAllocateInfo.pNext = 0;
+        MemoryAllocateInfo.allocationSize = ProgGpuAllocSize;
+        MemoryAllocateInfo.memoryTypeIndex = 0;
+
+        if (vkAllocateMemory(GlobalState.Device, &MemoryAllocateInfo, 0, &GlobalState.GpuLocalMemory) != VK_SUCCESS)
+        {
+            InvalidCodePath;
+        }
+
+        gpu_ptr BasePtr = {};
+        BasePtr.Memory = &GlobalState.GpuLocalMemory;
+        BasePtr.Offset = 0;
+
+        GlobalState.GpuAllocator = InitGpuLinearAllocator(BasePtr, ProgGpuAllocSize);
+    }
+
     // NOTE: Create command pools
     {
         // NOTE: Allocate graphics pools
@@ -1628,27 +1628,27 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         VkFormat OutputFormat = GlobalState.SwapChainFormat;
             
         // NOTE: Create GBuffer images
-        CreateImage(RENDER_WIDTH, RENDER_HEIGHT, WorldPosFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        CreateImage(&GlobalState.GpuAllocator, RENDER_WIDTH, RENDER_HEIGHT, WorldPosFormat,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    &GlobalState.GBuffer.WorldPosImg, &GlobalState.GBuffer.WorldPosView,
-                    GlobalState.GBuffer.Memory + 0);
+                    &GlobalState.GBuffer.WorldPosImg, &GlobalState.GBuffer.WorldPosView);
             
-        CreateImage(RENDER_WIDTH, RENDER_HEIGHT, DiffuseFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        CreateImage(&GlobalState.GpuAllocator, RENDER_WIDTH, RENDER_HEIGHT, DiffuseFormat,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    &GlobalState.GBuffer.DiffuseImg, &GlobalState.GBuffer.DiffuseView,
-                    GlobalState.GBuffer.Memory + 1);
+                    &GlobalState.GBuffer.DiffuseImg, &GlobalState.GBuffer.DiffuseView);
             
-        CreateImage(RENDER_WIDTH, RENDER_HEIGHT, WorldNormalFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        CreateImage(&GlobalState.GpuAllocator, RENDER_WIDTH, RENDER_HEIGHT, WorldNormalFormat,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    &GlobalState.GBuffer.WorldNormalImg, &GlobalState.GBuffer.WorldNormalView,
-                    GlobalState.GBuffer.Memory + 2);
+                    &GlobalState.GBuffer.WorldNormalImg, &GlobalState.GBuffer.WorldNormalView);
             
         // NOTE: Create depth map and convert it
         VkImageAspectFlags DepthAspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        CreateImage(RENDER_WIDTH, RENDER_HEIGHT, DepthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        CreateImage(&GlobalState.GpuAllocator, RENDER_WIDTH, RENDER_HEIGHT, DepthFormat,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     DepthAspectMask, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    &GlobalState.GBuffer.DepthImg, &GlobalState.GBuffer.DepthView,
-                    GlobalState.GBuffer.Memory + 3);
+                    &GlobalState.GBuffer.DepthImg, &GlobalState.GBuffer.DepthView);
 
         // TODO: Make this a transition image layout function
         {
@@ -2120,17 +2120,6 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             InvalidCodePath;
         }
     }
-
-#if 0
-    // NOTE: Create gbuffer pipeline
-    WorkCreatePipeline();
-
-    // NOTE: Create point light pipeline
-    WorkCreatePipeline();
-
-    // NOTE: Create dir light pipeline
-    WorkCreatePipeline();
-#endif
     
     // NOTE: Create gbuffer pipeline
     {
@@ -2286,8 +2275,6 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         DepthStencilCreateInfo.stencilTestEnable = VK_FALSE;
         DepthStencilCreateInfo.front = {};
         DepthStencilCreateInfo.back = {};
-        //DepthStencilCreateInfo.minDepthBounds = 0.0f;
-        //DepthStencilCreateInfo.maxDepthBounds = 1.0f;
             
         // NOTE: Describe how the input data is arranged in memory
         VkPipelineLayoutCreateInfo LayoutCreateInfo = {};
@@ -2714,7 +2701,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GlobalState.Assets = LoadAssets(AssetFilePtr, &GlobalState.Arena);
         VirtualFree(AssetFilePtr, 0, MEM_RELEASE);
     }
-#if 0
+    
     // NOTE: Create a texture sampler
     {
         // NOTE: Create a sampler
@@ -2761,11 +2748,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
         VkImage WhiteTexture;
         VkImageView WhiteTextureView;
-        VkDeviceMemory WhiteTextureMem;
-        CreateImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        CreateImage(&GlobalState.GpuAllocator, 1, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, &WhiteTexture,
-                    &WhiteTextureView, &WhiteTextureMem);
-        MoveImageToGpuMemory(GlobalState.PrimaryCmdBuffer, DataSize, 1, 1, &TextureData, WhiteTexture);
+                    &WhiteTextureView);
+        MoveImageToGpuMemory(&GlobalState.GpuAllocator, GlobalState.PrimaryCmdBuffer, DataSize, 1, 1, &TextureData, WhiteTexture);
 
         // NOTE: Allocate descriptor sets
         VkDescriptorSetAllocateInfo DescriptorSetAllocateInfo = {};
@@ -2783,10 +2770,10 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                 for (i32 ModelX = -1; ModelX <= 1; ++ModelX)
                 {
                     asset_mesh** CurrMesh = GlobalState.MeshAssets + GlobalState.NumModels;
-                    uniform_buffer* CurrVertUniformBuffer = GlobalState.ModelVertUniformBuffers + GlobalState.NumModels;
-                    uniform_buffer* CurrFragUniformBuffer = GlobalState.ModelFragUniformBuffers + GlobalState.NumModels;
+                    VkBuffer* CurrVertUniformBuffer = GlobalState.ModelVertUniformBuffers + GlobalState.NumModels;
+                    VkBuffer* CurrFragUniformBuffer = GlobalState.ModelFragUniformBuffers + GlobalState.NumModels;
                     VkDescriptorSet* CurrDescriptorSet = GlobalState.ModelDescriptorSets + GlobalState.NumModels;
-
+                    
                     // NOTE: Get model asset
                     asset_model* CurrModel = GetModel(&GlobalState.Assets, Model_Bunny);
                     *CurrMesh = CurrModel->Meshes + 0;
@@ -2799,10 +2786,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                         VertUniforms.WTransform = PosMat(ModelPos.x, ModelPos.y, ModelPos.z)*ScaleMat(0.45, 0.45, 0.45);
                         VertUniforms.WVPTransform = VPTransform*VertUniforms.WTransform;
 
-                        CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        CreateBuffer(&GlobalState.GpuAllocator,
+                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VertUniformBufferSize,
-                                     &CurrVertUniformBuffer->Buffer, &CurrVertUniformBuffer->Memory);
-                        MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, CurrVertUniformBuffer->Buffer, (void*)&VertUniforms, VertUniformBufferSize);
+                                     CurrVertUniformBuffer);
+                        MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, *CurrVertUniformBuffer, (void*)&VertUniforms, VertUniformBufferSize);
                     }
                     
                     // NOTE: Setup frag uniform buffer
@@ -2812,10 +2800,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                         FragUniforms.SpecularIntensity = 1.0f;
                         FragUniforms.SpecularPower = 16.0f;
 
-                        CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        CreateBuffer(&GlobalState.GpuAllocator,
+                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, FragUniformBufferSize,
-                                     &CurrFragUniformBuffer->Buffer, &CurrFragUniformBuffer->Memory);
-                        MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, CurrFragUniformBuffer->Buffer, (void*)&FragUniforms, FragUniformBufferSize);
+                                     CurrFragUniformBuffer);
+                        MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, *CurrFragUniformBuffer, (void*)&FragUniforms, FragUniformBufferSize);
                     }
                     
                     // NOTE: Setup model descriptor set
@@ -2831,12 +2820,12 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                     ImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
                     VkDescriptorBufferInfo VertBufferInfo = {};
-                    VertBufferInfo.buffer = CurrVertUniformBuffer->Buffer;
+                    VertBufferInfo.buffer = *CurrVertUniformBuffer;
                     VertBufferInfo.offset = 0;
                     VertBufferInfo.range = VertUniformBufferSize;
 
                     VkDescriptorBufferInfo FragBufferInfo = {};
-                    FragBufferInfo.buffer = CurrFragUniformBuffer->Buffer;
+                    FragBufferInfo.buffer = *CurrFragUniformBuffer;
                     FragBufferInfo.offset = 0;
                     FragBufferInfo.range = FragUniformBufferSize;
             
@@ -2914,8 +2903,8 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                 {
                     for (i32 LightX = -1; LightX <= 1; ++LightX)
                     {
-                        uniform_buffer* CurrVertUniformBuffer = GlobalState.PointLightVertUniformBuffers + GlobalState.NumPointLights;
-                        uniform_buffer* CurrFragUniformBuffer = GlobalState.PointLightFragUniformBuffers + GlobalState.NumPointLights;
+                        VkBuffer* CurrVertUniformBuffer = GlobalState.PointLightVertUniformBuffers + GlobalState.NumPointLights;
+                        VkBuffer* CurrFragUniformBuffer = GlobalState.PointLightFragUniformBuffers + GlobalState.NumPointLights;
                         VkDescriptorSet* CurrDescriptorSet = GlobalState.PointLightDescriptorSets + GlobalState.NumPointLights;
 
                         // NOTE: Point light meta data
@@ -2931,10 +2920,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                             point_light_vert_uniforms VertUniforms = {};
                             VertUniforms.WVPTransform = VPTransform*PosMat(LightPos.x, LightPos.y, LightPos.z)*ScaleMat(Scale, Scale, Scale);
 
-                            CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            CreateBuffer(&GlobalState.GpuAllocator,
+                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VertUniformBufferSize,
-                                         &CurrVertUniformBuffer->Buffer, &CurrVertUniformBuffer->Memory);
-                            MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, CurrVertUniformBuffer->Buffer, (void*)&VertUniforms, VertUniformBufferSize);
+                                         CurrVertUniformBuffer);
+                            MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, *CurrVertUniformBuffer, (void*)&VertUniforms, VertUniformBufferSize);
                         }
                     
                         // NOTE: Setup frag uniform buffer
@@ -2948,10 +2938,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                             FragUniforms.EyeWorldPos = V3(0, 0, 0); // TODO: Camera pos
                             FragUniforms.LightRadius = Scale;
                             
-                            CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            CreateBuffer(&GlobalState.GpuAllocator,
+                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, FragUniformBufferSize,
-                                         &CurrFragUniformBuffer->Buffer, &CurrFragUniformBuffer->Memory);
-                            MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, CurrFragUniformBuffer->Buffer, (void*)&FragUniforms, FragUniformBufferSize);
+                                         CurrFragUniformBuffer);
+                            MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, *CurrFragUniformBuffer, (void*)&FragUniforms, FragUniformBufferSize);
                         }
                     
                         // NOTE: Setup model descriptor set
@@ -2962,12 +2953,12 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                         }
 
                         VkDescriptorBufferInfo VertBufferInfo = {};
-                        VertBufferInfo.buffer = CurrVertUniformBuffer->Buffer;
+                        VertBufferInfo.buffer = *CurrVertUniformBuffer;
                         VertBufferInfo.offset = 0;
                         VertBufferInfo.range = VertUniformBufferSize;
 
                         VkDescriptorBufferInfo FragBufferInfo = {};
-                        FragBufferInfo.buffer = CurrFragUniformBuffer->Buffer;
+                        FragBufferInfo.buffer = *CurrFragUniformBuffer;
                         FragBufferInfo.offset = 0;
                         FragBufferInfo.range = FragUniformBufferSize;
 
@@ -3061,7 +3052,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             DescriptorSetAllocateInfo.descriptorSetCount = 1;
             DescriptorSetAllocateInfo.pSetLayouts = &GlobalState.PointLightDescriptorSetLayout;
             
-            uniform_buffer* CurrUniformBuffer = GlobalState.DirLightUniformBuffers + GlobalState.NumDirLights;
+            VkBuffer* CurrUniformBuffer = GlobalState.DirLightUniformBuffers + GlobalState.NumDirLights;
             VkDescriptorSet* CurrDescriptorSet = GlobalState.DirLightDescriptorSets + GlobalState.NumDirLights;
             
             // NOTE: Setup vert uniform buffer
@@ -3074,10 +3065,9 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                 Uniforms.DiffuseIntensity = 0.4f;
                 Uniforms.EyeWorldPos = V3(0, 0, 0); // TODO: Camera pos
 
-                CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, UniformBufferSize,
-                             &CurrUniformBuffer->Buffer, &CurrUniformBuffer->Memory);
-                MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, CurrUniformBuffer->Buffer, (void*)&Uniforms, UniformBufferSize);
+                CreateBuffer(&GlobalState.GpuAllocator, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, UniformBufferSize, CurrUniformBuffer);
+                MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, *CurrUniformBuffer, (void*)&Uniforms, UniformBufferSize);
             }
                     
             // NOTE: Setup model descriptor set
@@ -3088,7 +3078,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             }
 
             VkDescriptorBufferInfo BufferInfo = {};
-            BufferInfo.buffer = CurrUniformBuffer->Buffer;
+            BufferInfo.buffer = *CurrUniformBuffer;
             BufferInfo.offset = 0;
             BufferInfo.range = UniformBufferSize;
 
@@ -3457,6 +3447,6 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     {
         vkDestroyInstance(GlobalState.Instance, 0);
     }
-#endif
+
     return 0;
 }

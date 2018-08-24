@@ -9,13 +9,6 @@ struct image
 {
     VkImage Image;
     VkImageView View;
-    VkDeviceMemory Memory;
-};
-
-struct uniform_buffer
-{
-    VkBuffer Buffer;
-    VkDeviceMemory Memory;    
 };
 
 struct gbuffer
@@ -49,9 +42,6 @@ struct gbuffer
 
         VkImageView Views[5];
     };
-
-    // TODO: Make this one piece of memory??
-    VkDeviceMemory Memory[5];
 };
 
 struct gbuffer_vert_uniforms
@@ -161,6 +151,10 @@ struct prog_state
     VkDevice Device;
     VkPhysicalDeviceMemoryProperties MemoryProperties;
 
+    // NOTE: Vulkan memory
+    VkDeviceMemory GpuLocalMemory;
+    gpu_linear_allocator GpuAllocator;
+    
     // NOTE: Transfer queues
     u32 TransferQueueFamId;
     u32 NumTransferQueues;
@@ -215,19 +209,19 @@ struct prog_state
 
     // NOTE: World data
     u32 NumDirLights;
-    uniform_buffer DirLightUniformBuffers[10];
+    VkBuffer DirLightUniformBuffers[10];
     VkDescriptorSet DirLightDescriptorSets[10];
 
     u32 NumPointLights;
-    uniform_buffer PointLightVertUniformBuffers[100];
-    uniform_buffer PointLightFragUniformBuffers[100];
+    VkBuffer PointLightVertUniformBuffers[100];
+    VkBuffer PointLightFragUniformBuffers[100];
     VkDescriptorSet PointLightDescriptorSets[100];
     asset_mesh* SphereMesh;
 
     u32 NumModels;
     asset_mesh* MeshAssets[100];
-    uniform_buffer ModelVertUniformBuffers[100];
-    uniform_buffer ModelFragUniformBuffers[100];
+    VkBuffer ModelVertUniformBuffers[100];
+    VkBuffer ModelFragUniformBuffers[100];
     VkDescriptorSet ModelDescriptorSets[100];
 };
 

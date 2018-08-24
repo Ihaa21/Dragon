@@ -14,13 +14,12 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
     file_model* FileModels = (file_model*)(Mem + Header->ModelArrayPos);
     file_texture* FileTextures = (file_texture*)(Mem + Header->TextureArrayPos);
 
-#if 0
     for (u64 FontIndex = 0; FontIndex < Assets.FontCount; ++FontIndex)
     {
         asset_font* AssetFont = Assets.Fonts + FontIndex;
         file_font FileFont = FileFonts[FontIndex];
         u32 NumGlyphsToLoad = FileFont.MaxGlyph - FileFont.MinGlyph;
-        
+
         AssetFont->MinGlyph = FileFont.MinGlyph;
         AssetFont->MaxGlyph = FileFont.MaxGlyph;
         AssetFont->MaxAscent = FileFont.MaxAscent;
@@ -48,8 +47,6 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
             file_glyph* FileGlyphArray = (file_glyph*)(Mem + FileFont.GlyphArrayOffset);
             for (u32 GlyphIndex = 0; GlyphIndex < NumGlyphsToLoad; ++GlyphIndex)
             {
-                WorkLoadGlyph();
-                
                 file_glyph FileGlyph = FileGlyphArray[GlyphIndex];
                 asset_glyph AssetGlyph = {};
                 AssetGlyph.Width = FileGlyph.Width;
@@ -58,11 +55,11 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
                 AssetGlyph.Dim = V2(1, 1);
                 AssetGlyph.AlignPos = FileGlyph.AlignPos;
 
-                CreateImage(FileGlyph.Width, FileGlyph.Height, VK_FORMAT_R8G8B8A8_UNORM,
+                CreateImage(&GlobalState.GpuAllocator, FileGlyph.Width, FileGlyph.Height, VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, &AssetGlyph.Handle,
-                            &AssetGlyph.View, &AssetGlyph.Memory);
-                MoveImageToGpuMemory(GlobalState.PrimaryCmdBuffer, sizeof(u32)*FileGlyph.Width*FileGlyph.Height, FileGlyph.Width,
+                            &AssetGlyph.View);
+                MoveImageToGpuMemory(&GlobalState.GpuAllocator, GlobalState.PrimaryCmdBuffer, sizeof(u32)*FileGlyph.Width*FileGlyph.Height, FileGlyph.Width,
                                      FileGlyph.Height, Mem + FileGlyph.PixelOffset, AssetGlyph.Handle);
 
                 AssetFont->GlyphArray[GlyphIndex] = AssetGlyph;
@@ -92,17 +89,15 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
             file_texture* FileTexture = (file_texture*)(Mem + FileModel.TextureArrayOffset);
             FileTexture += TextureId;
 
-            WorkLoadTexture();
-            
             Texture->MinUV = V2(0, 0);
             Texture->DimUV = V2(1, 1);
             Texture->AspectRatio = (f32)FileTexture->Width / (f32)FileTexture->Height;
 
-            CreateImage(FileTexture->Width, FileTexture->Height, VK_FORMAT_R8G8B8A8_UNORM,
+            CreateImage(&GlobalState.GpuAllocator, FileTexture->Width, FileTexture->Height, VK_FORMAT_R8G8B8A8_UNORM,
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, &Texture->Handle,
-                        &Texture->View, &Texture->Memory);
-            MoveImageToGpuMemory(GlobalState.PrimaryCmdBuffer, sizeof(u32)*FileTexture->Width*FileTexture->Height, FileTexture->Width,
+                        &Texture->View);
+            MoveImageToGpuMemory(&GlobalState.GpuAllocator, GlobalState.PrimaryCmdBuffer, sizeof(u32)*FileTexture->Width*FileTexture->Height, FileTexture->Width,
                                  FileTexture->Height, Mem + FileTexture->PixelOffset, Texture->Handle);
         }
         
@@ -115,18 +110,16 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
         {
             asset_mesh* Mesh = Model->Meshes + MeshId;
 
-            WorkLoadMesh();
-            
             Mesh->NumVertices = FileMesh->NumVertices;
             if (FileMesh->NumVertices != 0)
             {
                 u32 VertexBufferSize = FileMesh->NumVertices*VERTEX_SIZE;
-                CreateBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                CreateBuffer(&GlobalState.GpuAllocator, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VertexBufferSize,
-                             &Mesh->Handle, &Mesh->Memory);
+                             &Mesh->Handle);
 
-                MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, Mesh->Handle, Mem + FileMesh->VertexArrayOffset,
-                                      VertexBufferSize);
+                MoveBufferToGpuMemory(GlobalState.PrimaryCmdBuffer, Mesh->Handle,
+                                      Mem + FileMesh->VertexArrayOffset, VertexBufferSize);
             }
 
             Mesh->Texture = Model->TextureArray + FileMesh->TextureId;
@@ -134,7 +127,6 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
             FileMesh += 1;
         }
     }
-#endif
     
     for (u64 TextureIndex = 0; TextureIndex < Assets.TextureCount; ++TextureIndex)
     {
@@ -143,18 +135,17 @@ internal assets LoadAssets(u8* Mem, mem_arena* Arena)
         // NOTE: We check that this isnt a sub img
         if (Texture->Handle == VK_NULL_HANDLE)
         {
-            load_texture_work Work = {};
-            Work.Width = FileTexture.Width;
-            Work.Height = FileTexture.Height;
-            Work.Format = VK_FORMAT_R8G8B8A8_UNORM;
-            Work.Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            Work.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
-            Work.AspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
-            Work.Texture = Texture;
+            file_texture FileTexture = FileTextures[TextureIndex];
+            Texture->MinUV = V2(0, 0);
+            Texture->DimUV = V2(1, 1);
+            Texture->AspectRatio = (f32)FileTexture.Width / (f32)FileTexture.Height;
 
-            WorkLoadTexture();
-
-            MoveImageToGpuMemory(GlobalState.PrimaryCmdBuffer, sizeof(u32)*FileTexture.Width*FileTexture.Height, FileTexture.Width,
+            CreateImage(&GlobalState.GpuAllocator, FileTexture.Width, FileTexture.Height, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, &Texture->Handle,
+                        &Texture->View);
+            MoveImageToGpuMemory(&GlobalState.GpuAllocator, GlobalState.PrimaryCmdBuffer,
+                                 sizeof(u32)*FileTexture.Width*FileTexture.Height, FileTexture.Width,
                                  FileTexture.Height, Mem + FileTexture.PixelOffset, Texture->Handle);
         }
     }
