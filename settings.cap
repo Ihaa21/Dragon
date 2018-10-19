@@ -1,0 +1,25 @@
+{
+    "rdocCaptureSettings": 1,
+    "settings": {
+        "autoStart": false,
+        "commandLine": "",
+        "environment": [
+        ],
+        "executable": "W:\\dragon\\build_win32\\win32_dragon.exe",
+        "inject": false,
+        "options": {
+            "allowFullscreen": true,
+            "allowVSync": true,
+            "apiValidation": true,
+            "captureAllCmdLists": false,
+            "captureCallstacks": false,
+            "captureCallstacksOnlyDraws": false,
+            "debugOutputMute": true,
+            "delayForDebugger": 0,
+            "hookIntoChildren": false,
+            "refAllResources": false,
+            "verifyMapWrites": false
+        },
+        "workingDir": "W:/dragon/data"
+    }
+}

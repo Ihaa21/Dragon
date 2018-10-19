@@ -1,0 +1,114 @@
+#version 450
+
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_ARB_shading_language_420pack : enable
+
+struct plane
+{
+    vec3 N;
+    float d;
+};
+
+struct light_tile
+{
+    plane Planes[4];
+    
+    float MinDepth;
+    float MaxDepth;
+    uint Pad[2];
+};
+
+struct point_light
+{
+    vec3 Pos;
+    float Radius;
+
+    vec3 LightColor;
+    float AmbientIntensity;
+    
+    float DiffuseIntensity;
+};
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform push_constants
+{
+    mat4 VPTransform;
+    uint NumLights;
+    uint MaxLightsPerTile;
+} Const;
+
+layout(set = 0, binding = 0) buffer light_tiles
+{
+    light_tile LightTiles[];
+};
+
+layout(set = 1, binding = 0) buffer readonly point_light_array
+{
+    point_light PointLightArray[];
+};
+
+layout(set = 1, binding = 1) buffer point_light_index_array
+{
+    uint PointLightIndexArray[];
+};
+
+layout(set = 1, binding = 2, r32i) uniform iimage2D DebugHeatMap;
+
+shared light_tile LightTile;
+shared uint NumLightsInTile;
+
+void main()
+{
+    uint TileId = gl_WorkGroupID.y*gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint LightIdPtr = Const.MaxLightsPerTile*TileId + 1;
+
+    if (gl_LocalInvocationID.x == 0)
+    {
+        NumLightsInTile = 0;
+        LightTile = LightTiles[TileId];
+    }
+
+    groupMemoryBarrier();
+
+    // NOTE: Loop through lights and count how many are in
+    uint StartLightId = gl_LocalInvocationID.y*gl_WorkGroupSize.x + gl_LocalInvocationID.x;
+    uint NumJobsInTile = gl_WorkGroupSize.x*gl_WorkGroupSize.y;
+    for (uint LightId = StartLightId; LightId < Const.NumLights; LightId += NumJobsInTile)
+    {
+        bool Inside = true;
+        point_light CurrLight = PointLightArray[LightId];
+
+        // NOTE: Occlusion culling
+        if (CurrLight.Pos.z + CurrLight.Radius <= LightTile.MinDepth ||
+            CurrLight.Pos.z - CurrLight.Radius >= LightTile.MaxDepth)
+        {
+            Inside = false;
+        }
+
+        // NOTE: Frustum culling
+        for (uint PlaneId = 0; PlaneId < 4; PlaneId += 1)
+        {
+            plane CurrPlane = LightTile.Planes[PlaneId];
+            if ((dot(CurrLight.Pos, CurrPlane.N) + CurrPlane.d) < (-CurrLight.Radius))
+            {
+                Inside = false;
+            }
+        }
+
+        // NOTE: Add to light list
+        if (Inside)
+        {
+            uint OldIndex = atomicAdd(NumLightsInTile, 1);
+            PointLightIndexArray[LightIdPtr + OldIndex] = LightId;
+        }
+    }
+
+    groupMemoryBarrier();
+
+    if (gl_LocalInvocationID.x == 0)
+    {
+        PointLightIndexArray[LightIdPtr - 1] = NumLightsInTile;
+        imageStore(DebugHeatMap, ivec2(gl_WorkGroupID), ivec4(NumLightsInTile, 0, 0, 0)); 
+    }
+}
